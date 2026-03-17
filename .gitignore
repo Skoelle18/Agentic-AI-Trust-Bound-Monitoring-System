@@ -1,0 +1,48 @@
+# --- Secrets / env ---
+.env
+**/.env
+
+# --- Keys (never commit private keys) ---
+config/keys/private.pem
+services/**/jwt_private.pem
+data/**/keys/
+**/jwt_private.pem
+**/*private*.pem
+
+# Allow committing public keys if desired
+!config/keys/public.pem
+
+# --- Data / databases ---
+data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+**/*.sqlite3
+
+# --- Node / frontend ---
+frontend/node_modules/
+**/node_modules/
+frontend/dist/
+**/dist/
+frontend/.vite/
+**/.vite/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+
+# --- Python ---
+**/__pycache__/
+**/*.py[cod]
+.venv/
+venv/
+ENV/
+env/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
