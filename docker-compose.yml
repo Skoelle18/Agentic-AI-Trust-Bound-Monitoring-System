@@ -1,0 +1,186 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opa:
+    image: openpolicyagent/opa:0.68.0
+    command: ["run", "--server", "--addr", ":8181", "/config/policies"]
+    volumes:
+      - ./config/policies:/config/policies
+    ports:
+      - "8181:8181"
+    healthcheck:
+      # OPA image is minimal; avoid wget/curl dependency
+      test: ["CMD", "/opa", "version"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  audit:
+    build:
+      context: .
+      dockerfile: services/audit/Dockerfile
+    environment:
+      - AUDIT_DB_PATH=/data/audit.db
+      - KEY_DIR=/config/keys
+    volumes:
+      - ./data/audit:/data
+      - ./config:/config
+    ports:
+      - "8004:8004"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  registry:
+    build:
+      context: .
+      dockerfile: services/registry/Dockerfile
+    environment:
+      - REGISTRY_DB_PATH=/data/registry.db
+      - REGISTRY_KEY_DIR=/data/keys
+      - ALLOWLIST_PATH=/config/allowlist.yaml
+    volumes:
+      - ./data/registry:/data
+      - ./config:/config:ro
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  policy:
+    build:
+      context: .
+      dockerfile: services/policy/Dockerfile
+    environment:
+      - POLICY_DB_PATH=/data/policy.db
+      - REDIS_URL=redis://redis:6379/0
+      - OPA_URL=http://opa:8181
+      - OPA_EXTERNAL=true
+      - POLICY_FILE=/config/policies/main.rego
+    volumes:
+      - ./data/policy:/data
+      - ./config:/config
+    ports:
+      - "8002:8002"
+    depends_on:
+      redis:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  proxy:
+    build:
+      context: .
+      dockerfile: services/proxy/Dockerfile
+    environment:
+      - REGISTRY_URL=http://registry:8001
+      - POLICY_URL=http://policy:8002
+      - AUDIT_URL=http://audit:8004
+      - REDIS_URL=redis://redis:6379/0
+      - ALLOWLIST_PATH=/config/allowlist.yaml
+      - UPSTREAM_MCP_URL=http://upstream-mcp:9999/mcp
+      - PROTOTYPE_MODE=true
+    volumes:
+      - ./config:/config:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      policy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  anomaly:
+    build:
+      context: .
+      dockerfile: services/anomaly/Dockerfile
+    environment:
+      - ANOMALY_DB_PATH=/data/anomaly.db
+      - AUDIT_URL=http://audit:8004
+    volumes:
+      - ./data/anomaly:/data
+    ports:
+      - "8003:8003"
+    depends_on:
+      audit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      - VITE_REGISTRY_URL=http://localhost:8001
+      - VITE_PROXY_URL=http://localhost:8000
+      - VITE_POLICY_URL=http://localhost:8002
+      - VITE_ANOMALY_URL=http://localhost:8003
+      - VITE_AUDIT_URL=http://localhost:8004
+    ports:
+      - "3000:3000"
+    depends_on:
+      proxy:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+      policy:
+        condition: service_healthy
+      anomaly:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./services/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - frontend
+      - registry
+      - proxy
+      - policy
+      - anomaly
+      - audit
+
+  upstream-mcp:
+    image: hashicorp/http-echo:1.0
+    command: ["-listen=:9999", "-text={\"jsonrpc\":\"2.0\",\"id\":\"demo\",\"result\":{\"ok\":true,\"message\":\"upstream\"}}"]
+    ports:
+      - "9999:9999"
+
