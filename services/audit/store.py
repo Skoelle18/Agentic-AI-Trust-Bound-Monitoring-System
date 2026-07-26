@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 SCHEMA_SQL = """
@@ -94,7 +95,25 @@ def get_last_hash(conn: sqlite3.Connection) -> str:
     return str(row["event_hash"]) if row else "GENESIS"
 
 
-def insert_event(conn: sqlite3.Connection, row: AuditEventRow) -> None:
+_write_lock = threading.Lock()
+
+
+def append_chained_event(conn: sqlite3.Connection, build_row: Callable[[str], AuditEventRow]) -> AuditEventRow:
+    """Atomically append an event using the current chain tail as prev_hash."""
+    with _write_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            prev = get_last_hash(conn)
+            row = build_row(prev)
+            _insert_event(conn, row)
+            conn.commit()
+            return row
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _insert_event(conn: sqlite3.Connection, row: AuditEventRow) -> None:
     conn.execute(
         """
         INSERT INTO events (
@@ -133,6 +152,10 @@ def insert_event(conn: sqlite3.Connection, row: AuditEventRow) -> None:
                 "INSERT INTO sessions(session_id, first_ts, last_ts, agent_id) VALUES (?, ?, ?, ?)",
                 (row.session_id, row.timestamp, row.timestamp, row.agent_id),
             )
+
+
+def insert_event(conn: sqlite3.Connection, row: AuditEventRow) -> None:
+    _insert_event(conn, row)
     conn.commit()
 
 

@@ -17,11 +17,10 @@ from .chain import compute_event_hash
 from .signer import Keypair, load_or_generate, verify_signature, sign_event_hash
 from .store import (
     AuditEventRow,
+    append_chained_event,
     connect,
     get_event,
-    get_last_hash,
     init_db,
-    insert_event,
     list_events,
     list_sessions,
     session_events,
@@ -75,29 +74,30 @@ def health() -> dict[str, Any]:
 def write_event(body: AuditEventIn, request: Request) -> Any:
     try:
         event_id = str(uuid.uuid4())
-        prev = get_last_hash(_conn)
         payload = body.model_dump()
         payload["event_id"] = event_id
-        event_hash = compute_event_hash(prev, payload)
-        signature = sign_event_hash(_keys.private_key, event_hash)
 
-        row = AuditEventRow(
-            event_id=event_id,
-            timestamp=body.timestamp,
-            agent_id=body.agent_id,
-            session_id=body.session_id,
-            event_type=body.event_type,
-            tool_name=body.tool_name,
-            tool_args=body.tool_args,
-            policy_result=body.policy_result,
-            anomaly_scores=body.anomaly_scores,
-            reason=body.reason,
-            prev_hash=prev,
-            event_hash=event_hash,
-            signature=signature,
-        )
-        insert_event(_conn, row)
-        return _row_to_event(get_event(_conn, event_id))
+        def build_row(prev: str) -> AuditEventRow:
+            event_hash = compute_event_hash(prev, payload)
+            signature = sign_event_hash(_keys.private_key, event_hash)
+            return AuditEventRow(
+                event_id=event_id,
+                timestamp=body.timestamp,
+                agent_id=body.agent_id,
+                session_id=body.session_id,
+                event_type=body.event_type,
+                tool_name=body.tool_name,
+                tool_args=body.tool_args,
+                policy_result=body.policy_result,
+                anomaly_scores=body.anomaly_scores,
+                reason=body.reason,
+                prev_hash=prev,
+                event_hash=event_hash,
+                signature=signature,
+            )
+
+        row = append_chained_event(_conn, build_row)
+        return _row_to_event(get_event(_conn, row.event_id))
     except Exception as e:
         return problem_detail(
             status=500,
